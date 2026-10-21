@@ -1,0 +1,21 @@
+{
+  "name": "network-map-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.ts",
+    "dev": "node --watch src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "multicast-dns": "^7.2.5",
+    "oui-data": "^2.1.43",
+    "undici": "^8.12.3"
+  },
+  "devDependencies": {
+    "@types/multicast-dns": "^7.2.4",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}

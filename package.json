@@ -1,0 +1,11 @@
+{
+  "name": "network-map",
+  "private": true,
+  "scripts": {
+    "setup": "npm --prefix server install && npm --prefix app install",
+    "scanner": "npm --prefix server start",
+    "web": "npm --prefix app run web",
+    "dev": "npm --prefix server start & npm --prefix app run web; wait",
+    "typecheck": "npm --prefix server run typecheck && cd app && npx tsc --noEmit"
+  }
+}
