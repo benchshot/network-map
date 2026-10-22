@@ -17,5 +17,6 @@
     "@types/multicast-dns": "^7.2.4",
     "@types/node": "^26.6.5",
     "typescript": "^7.0.2"
-  }
+  },
+  "license": "MIT"
 }
