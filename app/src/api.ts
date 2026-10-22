@@ -1,5 +1,5 @@
 import { KINDS } from './theme';
-import type { Device, DeviceKind, Snapshot } from './types';
+import type { Device, DeviceKind, Finding, Severity, Snapshot } from './types';
 
 export const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:4319';
 
@@ -12,7 +12,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
-export type DeviceEdit = Partial<Pick<Device, 'name' | 'notes' | 'owner' | 'acknowledged'>> & { kind?: DeviceKind | 'auto' };
+export type DeviceEdit = Partial<Pick<Device, 'name' | 'notes' | 'owner' | 'acknowledged'>> & {
+  kind?: DeviceKind | 'auto';
+  acceptFinding?: string;
+  unacceptFinding?: string;
+};
 
 export const api = {
   snapshot: () => request<Snapshot>('/api/snapshot'),
@@ -21,6 +25,18 @@ export const api = {
     request<Device>(`/api/devices/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(edit) }),
   forget: (id: string) => request<void>(`/api/devices/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 };
+
+/** The worst open (not accepted) finding per device. */
+export function worstRisk(findings: Finding[]): Map<string, Severity> {
+  const rank: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+  const out = new Map<string, Severity>();
+  for (const f of findings) {
+    if (f.accepted || !f.deviceId) continue;
+    const current = out.get(f.deviceId);
+    if (!current || rank[f.severity] < rank[current]) out.set(f.deviceId, f.severity);
+  }
+  return out;
+}
 
 const generated = /^[0-9a-f-]{12,}$|[0-9a-f]{16,}|^none$/i;
 

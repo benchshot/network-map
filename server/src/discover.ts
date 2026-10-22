@@ -3,6 +3,8 @@ import { promisify } from 'node:util';
 import os from 'node:os';
 import dns from 'node:dns/promises';
 import net from 'node:net';
+import http from 'node:http';
+import type { OpenPort } from './types.ts';
 
 const run = promisify(execFile);
 
@@ -150,7 +152,9 @@ export async function reverseLookup(ip: string): Promise<string | undefined> {
 }
 
 export const PROBE_PORTS: Record<number, string> = {
+  21: 'FTP',
   22: 'SSH',
+  23: 'Telnet',
   53: 'DNS',
   80: 'HTTP',
   139: 'NetBIOS',
@@ -161,14 +165,18 @@ export const PROBE_PORTS: Record<number, string> = {
   631: 'Printing (IPP)',
   1400: 'Sonos',
   1883: 'MQTT',
+  2375: 'Docker API',
   3000: 'Web app',
+  3306: 'MySQL',
   3389: 'Remote Desktop',
   5000: 'Web (5000)',
   5001: 'Synology HTTPS',
   5432: 'PostgreSQL',
   5555: 'Android ADB',
   5900: 'VNC / Screen Sharing',
+  6379: 'Redis',
   7000: 'AirPlay',
+  8000: 'Web app',
   8008: 'Chromecast',
   8080: 'HTTP alt',
   8123: 'Home Assistant',
@@ -176,6 +184,9 @@ export const PROBE_PORTS: Record<number, string> = {
   8888: 'Web app',
   9000: 'Web / Portainer',
   9100: 'Printer (raw)',
+  9200: 'Elasticsearch',
+  11211: 'Memcached',
+  27017: 'MongoDB',
   32400: 'Plex',
   49152: 'UPnP',
   62078: 'iOS sync',
@@ -194,26 +205,120 @@ function probePort(ip: string, port: number, timeoutMs = 700): Promise<boolean> 
   });
 }
 
-async function httpTitle(ip: string, port: number): Promise<string | undefined> {
-  const scheme = [443, 5001, 8443].includes(port) ? 'https' : 'http';
-  if (scheme === 'https') return undefined;
-  try {
-    const res = await fetch(`${scheme}://${ip}:${port}/`, { signal: AbortSignal.timeout(1500), redirect: 'follow' });
-    const html = (await res.text()).slice(0, 20000);
-    return html.match(/<title[^>]*>([^<]{1,80})<\/title>/i)?.[1].trim() || undefined;
-  } catch {
-    return undefined;
-  }
+const HTTP_PORTS = [80, 3000, 5000, 8000, 8080, 8123, 8888, 9000];
+
+interface Page {
+  status: number;
+  headers: http.IncomingHttpHeaders;
+  body: string;
 }
 
-export async function probeHosts(ips: string[]): Promise<Map<string, { port: number; service: string; title?: string }[]>> {
+/**
+ * A plain GET using Node's lenient parser. Many routers and IoT devices send malformed responses
+ * (Content-Length and chunked together, for example) that fetch refuses outright.
+ */
+function get(url: string, timeoutMs = 1500): Promise<Page> {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, { insecureHTTPParser: true, timeout: timeoutMs }, (res) => {
+      let body = '';
+      res.setEncoding('latin1');
+      res.on('data', (chunk: string) => {
+        body += chunk;
+        if (body.length > 50000) res.destroy();
+      });
+      res.on('close', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+      res.on('error', reject);
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Loads the page on a plain-HTTP port, following up to three redirects (including <meta refresh>).
+ * Reports whether it ends up on HTTPS and whether it asks for a password, which is what the security check needs.
+ */
+export async function httpProbe(ip: string, port: number): Promise<{ title?: string; https: boolean; login: boolean } | undefined> {
+  let url = `http://${ip}:${port}/`;
+  let title: string | undefined;
+  try {
+    for (let hop = 0; hop < 4; hop++) {
+      const page = await get(url);
+      const passwordField = /<input[^>]+(type\s*=\s*["']?password|(name|id)\s*=\s*["'][^"']*password)/i.test(page.body);
+      const refresh = page.body.match(/<meta[^>]+http-equiv\s*=\s*["']?refresh[^>]+url\s*=\s*['"]?([^"'>\s]+)/i)?.[1];
+      const location = page.status >= 300 && page.status < 400 ? page.headers.location : refresh;
+      title ??= page.body.match(/<title[^>]*>([^<]{1,80})<\/title>/i)?.[1].trim() || undefined;
+      if (location && hop < 3 && !passwordField) {
+        url = new URL(location, url).toString();
+        if (url.startsWith('https:')) return { title, https: true, login: false };
+        continue;
+      }
+      return {
+        title,
+        https: false,
+        // Digest auth never sends the password itself, so only Basic counts.
+        login:
+          passwordField ||
+          /login|signin/i.test(new URL(url).pathname) ||
+          (page.status === 401 && /^basic/i.test(String(page.headers['www-authenticate'] ?? ''))),
+      };
+    }
+  } catch {
+    // Not HTTP, or it didn't answer in time.
+  }
+  return undefined;
+}
+
+/** Sends the first message of a protocol's normal handshake and returns the first bytes of the reply. */
+function firstReply(ip: string, port: number, hello: Buffer, timeoutMs = 2000): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: ip, port });
+    const done = (reply?: string) => {
+      socket.destroy();
+      resolve(reply);
+    };
+    socket.setTimeout(timeoutMs, () => done());
+    socket.once('connect', () => socket.write(hello));
+    socket.once('data', (data: Buffer) => done(data.subarray(0, 64).toString('latin1')));
+    socket.once('error', () => done());
+  });
+}
+
+function adbConnect(): Buffer {
+  const command = 0x4e584e43; // "CNXN"
+  const message = Buffer.alloc(24);
+  message.writeUInt32LE(command, 0);
+  message.writeUInt32LE(0x01000000, 4);
+  message.writeUInt32LE(4096, 8);
+  message.writeUInt32LE((command ^ 0xffffffff) >>> 0, 20);
+  return message;
+}
+
+/**
+ * Whether a service lets anyone in without credentials. This only opens the conversation the way a normal
+ * client would and reads the greeting; it never sends credentials or commands.
+ */
+export async function authCheck(ip: string, port: number): Promise<OpenPort['auth']> {
+  if (port === 5555) {
+    const reply = await firstReply(ip, port, adbConnect());
+    return reply?.startsWith('AUTH') ? 'required' : reply?.startsWith('CNXN') ? 'none' : undefined;
+  }
+  if (port === 6379) {
+    const reply = await firstReply(ip, port, Buffer.from('PING\r\n'));
+    return reply?.startsWith('+PONG') ? 'none' : reply?.includes('NOAUTH') || reply?.includes('DENIED') ? 'required' : undefined;
+  }
+  return undefined;
+}
+
+export async function probeHosts(ips: string[]): Promise<Map<string, OpenPort[]>> {
   const jobs = ips.flatMap((ip) => Object.keys(PROBE_PORTS).map((port) => ({ ip, port: Number(port) })));
-  const open = new Map<string, { port: number; service: string; title?: string }[]>();
+  const open = new Map<string, OpenPort[]>();
   await mapLimit(jobs, 128, async ({ ip, port }) => {
     if (!(await probePort(ip, port))) return;
-    const title = [80, 3000, 5000, 8080, 8123, 8888, 9000].includes(port) ? await httpTitle(ip, port) : undefined;
+    const page = HTTP_PORTS.includes(port) ? await httpProbe(ip, port) : undefined;
+    const auth = await authCheck(ip, port);
     const list = open.get(ip) ?? [];
-    list.push({ port, service: PROBE_PORTS[port], title });
+    list.push({ port, service: PROBE_PORTS[port], title: page?.title, web: page && { https: page.https, login: page.login }, auth });
     open.set(ip, list);
   });
   for (const list of open.values()) list.sort((a, b) => a.port - b.port);

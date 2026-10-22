@@ -58,13 +58,27 @@ Adding another router means writing one file in `server/src/routers/` that retur
 - **Navigation:** drag or two-finger scroll to pan, pinch or ⌘-scroll (or a mouse wheel) to zoom, and **⤢** to fit the whole map.
 - Search matches names, IPs, MACs, vendors, owners, notes and service names.
 
+## Security check
+
+Every scan also looks for the most common ways a home network gets into trouble. Results appear in the **Security** tab, as a badge on each device in the map and list, and at the top of a device's details. **At risk** in the list filters the map to just those devices.
+
+| Check | What it flags |
+| --- | --- |
+| **Internet exposure** | Ports your router has opened to the internet through UPnP, and whether UPnP is on at all. Mappings to risky services are critical. If your router sits behind another router, they're downgraded |
+| **Risky services** | Telnet, FTP, Docker's unencrypted API, Android debugging, Redis, MongoDB, Elasticsearch, Memcached, MySQL, PostgreSQL, Remote Desktop, VNC, MQTT, camera streams and SMB file sharing |
+| **Unencrypted logins** | Web pages that ask for a password over plain HTTP without redirecting to HTTPS, including the router's admin page. Digest auth isn't flagged because it never sends the password |
+
+For Android debugging and Redis, the scanner opens the connection the way a normal client would and reads the greeting. That tells "anyone can connect" (critical) apart from "needs approval or a password" (lower).
+
+It only looks. It never tries passwords, sends exploits, or adds or removes router mappings. Only online devices are rated, since only their ports were re-checked. If something is intentional, such as SSH on your own server, press **This is expected** and it moves to a collapsed list instead of counting against you.
+
 ## API
 
 | Method | Path | |
 | --- | --- | --- |
-| GET | `/api/snapshot` | Devices, links, scan status, router status, warnings |
+| GET | `/api/snapshot` | Devices, links, scan status, router status, warnings, `security` (findings and UPnP status) |
 | POST | `/api/scan` | Start a scan now |
-| PATCH | `/api/devices/:id` | `{ name, owner, notes, acknowledged, kind }` (`kind: "auto"` returns to guessing) |
+| PATCH | `/api/devices/:id` | `{ name, owner, notes, acknowledged, kind, acceptFinding, unacceptFinding }` (`kind: "auto"` returns to guessing; findings take a key like `port:22`) |
 | DELETE | `/api/devices/:id` | Forget a device |
 
 Settings in `server/.env`: `PORT`, `HOST` (set `0.0.0.0` to serve the LAN), `SCAN_INTERVAL_MIN` (`0` turns off periodic scans), `SCAN_INTERFACE`. The app reads `EXPO_PUBLIC_API_URL` if the scanner isn't on `localhost:4319`.
@@ -75,9 +89,10 @@ Issues and pull requests are welcome. Useful areas:
 
 - **Router adapters.** TP-Link (Deco, Omada), ASUS, eero, Fritz!Box and others. Each one is a single file in `server/src/routers/`.
 - **Better device guesses.** Classification rules live in `server/src/classify.ts`.
+- **More security checks.** Rules live in `server/src/security.ts`. Checks must stay read-only: no password guessing, no exploits.
 - **Windows support** for discovery in `server/src/discover.ts`.
 
-Run `npm run typecheck` before opening a PR.
+Run `npm test` and `npm run typecheck` before opening a PR.
 
 ## License
 

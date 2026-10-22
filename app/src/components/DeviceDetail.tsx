@@ -3,7 +3,8 @@ import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } fro
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { displayName, formatBytes, timeAgo, type DeviceEdit } from '../api';
 import { KIND_ORDER, KINDS, type Theme } from '../theme';
-import type { Device } from '../types';
+import type { Device, Finding } from '../types';
+import { FindingCard } from './SecurityPanel';
 
 const WEB_PORTS: Record<number, string> = {
   80: 'http',
@@ -23,6 +24,8 @@ interface Props {
   device: Device;
   parent?: Device;
   theme: Theme;
+  findings: Finding[];
+  onAccept(finding: Finding, accepted: boolean): void;
   onEdit(edit: DeviceEdit): void;
   onForget(): void;
   onSelect(id: string): void;
@@ -77,7 +80,7 @@ function Row({ label, value, theme }: { label: string; value?: string | number; 
   );
 }
 
-export function DeviceDetail({ device: d, parent, theme, onEdit, onForget, onSelect, onClose }: Props) {
+export function DeviceDetail({ device: d, parent, theme, findings, onAccept, onEdit, onForget, onSelect, onClose }: Props) {
   const [pickingKind, setPickingKind] = useState(false);
   const [confirmForget, setConfirmForget] = useState(false);
   const meta = KINDS[d.kind];
@@ -120,6 +123,14 @@ export function DeviceDetail({ device: d, parent, theme, onEdit, onForget, onSel
           <Pressable onPress={() => onEdit({ acknowledged: true })} style={[styles.button, { backgroundColor: theme.accent }]}>
             <Text style={styles.buttonText}>It's mine</Text>
           </Pressable>
+        </View>
+      ) : null}
+
+      {findings.length ? (
+        <View style={{ marginBottom: 8 }}>
+          {findings.map((f) => (
+            <FindingCard key={f.id} finding={f} theme={theme} onAccept={(a) => onAccept(f, a)} />
+          ))}
         </View>
       ) : null}
 

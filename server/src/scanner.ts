@@ -15,7 +15,9 @@ import {
 } from './discover.ts';
 import { browseMdns } from './mdns.ts';
 import { guessKind } from './classify.ts';
-import type { Device, DeviceKind, Link, RouterAdapter, RouterClient, Snapshot, Source } from './types.ts';
+import { assess } from './security.ts';
+import { readUpnp } from './upnp.ts';
+import type { Device, DeviceKind, Link, RouterAdapter, RouterClient, Snapshot, Source, UpnpStatus } from './types.ts';
 
 const ouiTable: Record<string, string> = createRequire(import.meta.url)('oui-data');
 
@@ -24,7 +26,12 @@ function vendorFor(mac: string): string | undefined {
   return ouiTable[mac.replace(/:/g, '').slice(0, 6).toUpperCase()]?.split('\n')[0];
 }
 
-export type DeviceEdit = Partial<Pick<Device, 'name' | 'notes' | 'owner' | 'acknowledged'>> & { kind?: DeviceKind | 'auto' };
+export type DeviceEdit = Partial<Pick<Device, 'name' | 'notes' | 'owner' | 'acknowledged'>> & {
+  kind?: DeviceKind | 'auto';
+  /** Finding key to mark as expected, or to un-mark. */
+  acceptFinding?: string;
+  unacceptFinding?: string;
+};
 
 export class Scanner {
   private devices = new Map<string, Device>();
@@ -36,6 +43,7 @@ export class Scanner {
   private gatewayId?: string;
   private routerStatus: Snapshot['routers'] = [];
   private warnings: string[] = [];
+  private upnp?: UpnpStatus;
   private readonly file: string;
   private readonly routers: RouterAdapter[];
   private readonly interfaceName?: string;
@@ -48,9 +56,10 @@ export class Scanner {
 
   async load() {
     try {
-      const saved = JSON.parse(await fs.readFile(this.file, 'utf8')) as { devices: Device[]; lastScanAt?: string };
+      const saved = JSON.parse(await fs.readFile(this.file, 'utf8')) as { devices: Device[]; lastScanAt?: string; upnp?: UpnpStatus };
       for (const d of saved.devices) this.devices.set(d.id, { ...d, online: false });
       this.lastScanAt = saved.lastScanAt;
+      this.upnp = saved.upnp;
     } catch {
       // First run.
     }
@@ -58,7 +67,7 @@ export class Scanner {
 
   private async save() {
     await fs.mkdir(path.dirname(this.file), { recursive: true });
-    const body = JSON.stringify({ lastScanAt: this.lastScanAt, devices: [...this.devices.values()] }, null, 2);
+    const body = JSON.stringify({ lastScanAt: this.lastScanAt, upnp: this.upnp, devices: [...this.devices.values()] }, null, 2);
     await fs.writeFile(`${this.file}.tmp`, body);
     await fs.rename(`${this.file}.tmp`, this.file);
   }
@@ -82,6 +91,7 @@ export class Scanner {
       lastScanMs: this.lastScanMs,
       routers: this.routerStatus,
       warnings: this.warnings,
+      security: { findings: assess(devices, this.upnp, this.gatewayId), upnp: this.upnp },
     };
   }
 
@@ -92,6 +102,8 @@ export class Scanner {
     if (edit.notes !== undefined) device.notes = edit.notes.trim() || undefined;
     if (edit.owner !== undefined) device.owner = edit.owner.trim() || undefined;
     if (edit.acknowledged !== undefined) device.acknowledged = edit.acknowledged;
+    if (edit.acceptFinding) device.acceptedFindings = [...new Set([...(device.acceptedFindings ?? []), edit.acceptFinding])];
+    if (edit.unacceptFinding) device.acceptedFindings = device.acceptedFindings?.filter((k) => k !== edit.unacceptFinding);
     if (edit.kind === 'auto') {
       device.kindSetByUser = false;
       device.kind = guessKind(device, this.gatewayIp());
@@ -140,6 +152,9 @@ export class Scanner {
       }
       if (placeholder.firstSeen < device.firstSeen) device.firstSeen = placeholder.firstSeen;
       device.acknowledged ||= placeholder.acknowledged;
+      if (placeholder.acceptedFindings?.length) {
+        device.acceptedFindings = [...new Set([...(device.acceptedFindings ?? []), ...placeholder.acceptedFindings])];
+      }
       this.devices.delete(placeholder.id);
     }
     return device;
@@ -184,7 +199,11 @@ export class Scanner {
       const gatewayIp = await defaultGateway();
 
       this.scanStage = 'Pinging subnet and listening for Bonjour';
-      const [alive, mdnsHosts] = await Promise.all([pingSweep(subnetHosts(iface)), browseMdns(5000)]);
+      const subnet = subnetHosts(iface);
+      const [alive, announced] = await Promise.all([pingSweep(subnet), browseMdns(5000)]);
+      // Bonjour also answers on loopback and link-local addresses; only keep hosts on this network.
+      const inSubnet = new Set([...subnet, iface.ip]);
+      const mdnsHosts = new Map([...announced].filter(([ip]) => inSubnet.has(ip)));
 
       this.scanStage = 'Reading neighbour table';
       const arp = await readArpTable();
@@ -203,7 +222,8 @@ export class Scanner {
       hosts.set(iface.ip, selfMac === '02:00:00:00:00:00' ? undefined : selfMac);
 
       this.scanStage = 'Asking routers';
-      const routerClients = await this.queryRouters();
+      const [routerClients, upnp] = await Promise.all([this.queryRouters(), readUpnp()]);
+      this.upnp = upnp;
 
       for (const d of this.devices.values()) d.online = false;
 

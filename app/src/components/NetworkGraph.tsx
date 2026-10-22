@@ -15,8 +15,8 @@ import {
   type Point,
   type TreeNode,
 } from '../graph';
-import { GROUP_LABELS, GROUP_ORDER, KINDS, type Group, type Theme } from '../theme';
-import type { Snapshot } from '../types';
+import { GROUP_LABELS, GROUP_ORDER, KINDS, SEVERITY, SEVERITY_ORDER, type Group, type Theme } from '../theme';
+import type { Severity, Snapshot } from '../types';
 
 const NODE = 38;
 const ROOT_NODE = 50;
@@ -156,10 +156,19 @@ interface Props {
   theme: Theme;
   selectedId?: string;
   matchingIds?: Set<string>;
+  /** Worst open finding per device id. */
+  risks: Map<string, Severity>;
   onSelect(id: string | undefined): void;
 }
 
-export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, onSelect }: Props) {
+/** A device's own risk, or for a folded branch the worst risk hidden inside it. */
+function nodeRisk(n: TreeNode, risks: Map<string, Severity>): Severity | undefined {
+  const ids = n.collapsed ? flatten(n, true).map((c) => c.id) : [n.id];
+  const found = ids.map((id) => risks.get(id)).filter((r): r is Severity => !!r);
+  return SEVERITY_ORDER.find((s) => found.includes(s));
+}
+
+export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, risks, onSelect }: Props) {
   const [mode, setMode] = usePreference<LayoutMode>('netmap.layout', 'tree');
   const [groupBy, setGroupBy] = usePreference<GroupBy>('netmap.groupBy', 'type');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -405,6 +414,7 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, onSelec
   };
 
   const hovered = hoverId ? nodesById.get(hoverId)?.device : undefined;
+  const hoveredIssues = hovered ? snapshot.security.findings.filter((f) => f.deviceId === hovered.id && !f.accepted).length : 0;
   const hoverPos = hoverId ? positions.get(hoverId) : undefined;
   const narrow = size.width < 600;
 
@@ -466,6 +476,7 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, onSelec
                 : 'account'
               : GROUP_ICONS[group!];
           const selected = d !== undefined && d.id === selectedId;
+          const risk = nodeRisk(n, risks);
           const dimmed = !matchesFilter(n) || (hovering && !lit.route.has(n.id) && !lit.below.has(n.id));
           const label = d ? (d.isSelf ? 'This Mac' : displayName(d)) : n.bucket!.label;
           const sub = d
@@ -499,8 +510,8 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, onSelec
                 accessibilityRole="button"
                 accessibilityLabel={
                   d
-                    ? `${label}, ${KINDS[d.kind].label}, ${d.online ? 'online' : 'offline'}`
-                    : `${label}, ${n.total} devices, ${n.collapsed ? 'collapsed' : 'expanded'}`
+                    ? `${label}, ${KINDS[d.kind].label}, ${d.online ? 'online' : 'offline'}${risk ? `, ${SEVERITY[risk].label} security risk` : ''}`
+                    : `${label}, ${n.total} devices, ${n.collapsed ? 'collapsed' : 'expanded'}${risk ? `, contains a ${SEVERITY[risk].label} security risk` : ''}`
                 }
                 style={{ width: nodeSize, height: nodeSize, alignItems: 'center', justifyContent: 'center' }}
               >
@@ -522,6 +533,11 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, onSelec
                 </View>
                 {d ? (
                   <View style={[styles.statusDot, { backgroundColor: d.online ? theme.good : theme.muted, borderColor: theme.surface }]} />
+                ) : null}
+                {risk ? (
+                  <View style={[styles.riskBadge, { backgroundColor: theme.surface }]}>
+                    <MaterialCommunityIcons name={SEVERITY[risk].icon as never} size={14} color={SEVERITY[risk].color(theme)} />
+                  </View>
                 ) : null}
                 {n.bucket ? (
                   <View style={[styles.countBadge, { backgroundColor: color }]}>
@@ -599,6 +615,18 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, onSelec
             <Text style={[styles.tooltipLine, { color: theme.textSecondary }]} numberOfLines={2}>
               {[...hovered.ports.map((p) => p.service), ...hovered.mdnsServices].join(', ')}
             </Text>
+          ) : null}
+          {risks.has(hovered.id) ? (
+            <View style={styles.tooltipRisk}>
+              <MaterialCommunityIcons
+                name={SEVERITY[risks.get(hovered.id)!].icon as never}
+                size={13}
+                color={SEVERITY[risks.get(hovered.id)!].color(theme)}
+              />
+              <Text style={[styles.tooltipLine, { color: theme.text }]}>
+                {hoveredIssues} security issue{hoveredIssues === 1 ? '' : 's'} · click for details
+              </Text>
+            </View>
           ) : null}
           {hovered.notes ? (
             <Text style={[styles.tooltipLine, { color: theme.text, marginTop: 4 }]} numberOfLines={3}>
@@ -723,6 +751,17 @@ const styles = StyleSheet.create({
   tooltip: { position: 'absolute', width: 210, padding: 10, borderRadius: 8, borderWidth: 1, gap: 2 },
   tooltipTitle: { fontSize: 13, fontWeight: '700' },
   tooltipLine: { fontSize: 12 },
+  tooltipRisk: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
+  riskBadge: {
+    position: 'absolute',
+    left: -4,
+    top: -4,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   toolbar: { position: 'absolute', left: 12, top: 12, flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   segmented: { flexDirection: 'row', borderWidth: 1, borderRadius: 8, padding: 2, gap: 2 },
   segment: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 6 },

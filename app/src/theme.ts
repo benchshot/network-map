@@ -1,5 +1,5 @@
 import { useColorScheme } from 'react-native';
-import type { DeviceKind } from './types';
+import type { DeviceKind, Severity } from './types';
 
 export type Group = 'infrastructure' | 'computers' | 'personal' | 'media' | 'smartHome' | 'unknown';
 
@@ -14,6 +14,7 @@ const light = {
   accent: '#2a78d6',
   good: '#0ca30c',
   warning: '#fab219',
+  serious: '#ec835a',
   critical: '#d03b3b',
   edge: '#c9c8c1',
   edgeActive: '#2a78d6',
@@ -38,6 +39,7 @@ const dark: typeof light = {
   accent: '#3987e5',
   good: '#0ca30c',
   warning: '#fab219',
+  serious: '#ec835a',
   critical: '#d03b3b',
   edge: '#3a3a37',
   edgeActive: '#3987e5',
@@ -87,3 +89,13 @@ export const KINDS: Record<DeviceKind, { label: string; icon: string; group: Gro
 };
 
 export const KIND_ORDER = Object.keys(KINDS) as DeviceKind[];
+
+/** Status colors carry severity, always next to an icon and a label. */
+export const SEVERITY: Record<Severity, { label: string; icon: string; color: (t: Theme) => string }> = {
+  critical: { label: 'Critical', icon: 'shield-alert', color: (t) => t.critical },
+  high: { label: 'High', icon: 'alert-octagon', color: (t) => t.serious },
+  medium: { label: 'Medium', icon: 'alert', color: (t) => t.warning },
+  low: { label: 'Low', icon: 'information', color: (t) => t.muted },
+};
+
+export const SEVERITY_ORDER: Severity[] = ['critical', 'high', 'medium', 'low'];

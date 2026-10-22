@@ -1,10 +1,12 @@
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { displayName } from '../api';
-import { GROUP_LABELS, GROUP_ORDER, KINDS, type Theme } from '../theme';
-import type { Device } from '../types';
+import { GROUP_LABELS, GROUP_ORDER, KINDS, SEVERITY, type Theme } from '../theme';
+import type { Device, Severity } from '../types';
 
-export type Filter = 'all' | 'online' | 'new' | 'offline';
+export type Filter = 'all' | 'online' | 'new' | 'offline' | 'risk';
+
+const FILTER_LABELS: Record<Filter, string> = { all: 'All', online: 'Online', new: 'New', offline: 'Offline', risk: 'At risk' };
 
 interface Props {
   devices: Device[];
@@ -15,10 +17,13 @@ interface Props {
   onQuery(q: string): void;
   onFilter(f: Filter): void;
   onSelect(id: string): void;
+  /** Worst open finding per device id. */
+  risks: Map<string, Severity>;
 }
 
-export function matches(d: Device, query: string, filter: Filter): boolean {
+export function matches(d: Device, query: string, filter: Filter, risks: Map<string, Severity>): boolean {
   if (filter === 'online' && !d.online) return false;
+  if (filter === 'risk' && !risks.has(d.id)) return false;
   if (filter === 'offline' && d.online) return false;
   if (filter === 'new' && d.acknowledged) return false;
   if (!query) return true;
@@ -39,14 +44,15 @@ export function matches(d: Device, query: string, filter: Filter): boolean {
     .some((field) => field!.toLowerCase().includes(q));
 }
 
-export function DeviceList({ devices, theme, query, filter, selectedId, onQuery, onFilter, onSelect }: Props) {
+export function DeviceList({ devices, theme, query, filter, selectedId, onQuery, onFilter, onSelect, risks }: Props) {
   const counts: Record<Filter, number> = {
     all: devices.length,
     online: devices.filter((d) => d.online).length,
     new: devices.filter((d) => !d.acknowledged).length,
     offline: devices.filter((d) => !d.online).length,
+    risk: devices.filter((d) => risks.has(d.id)).length,
   };
-  const visible = devices.filter((d) => matches(d, query, filter));
+  const visible = devices.filter((d) => matches(d, query, filter, risks));
 
   return (
     <View style={styles.root}>
@@ -67,7 +73,7 @@ export function DeviceList({ devices, theme, query, filter, selectedId, onQuery,
       </View>
 
       <View style={styles.filters}>
-        {(['all', 'online', 'new', 'offline'] as Filter[]).map((f) => {
+        {(['all', 'online', 'new', 'offline', 'risk'] as Filter[]).filter((f) => f !== 'risk' || counts.risk || filter === 'risk').map((f) => {
           const active = filter === f;
           return (
             <Pressable
@@ -79,7 +85,7 @@ export function DeviceList({ devices, theme, query, filter, selectedId, onQuery,
               ]}
             >
               <Text style={[styles.chipText, { color: active ? '#fff' : theme.textSecondary }]}>
-                {f[0].toUpperCase() + f.slice(1)} {counts[f]}
+                {FILTER_LABELS[f]} {counts[f]}
               </Text>
             </Pressable>
           );
@@ -131,6 +137,14 @@ export function DeviceList({ devices, theme, query, filter, selectedId, onQuery,
                           .join(' · ')}
                       </Text>
                     </View>
+                    {risks.has(d.id) ? (
+                      <MaterialCommunityIcons
+                        name={SEVERITY[risks.get(d.id)!].icon as never}
+                        size={15}
+                        color={SEVERITY[risks.get(d.id)!].color(theme)}
+                        accessibilityLabel={`${SEVERITY[risks.get(d.id)!].label} security risk`}
+                      />
+                    ) : null}
                     {!d.acknowledged ? (
                       <View style={[styles.newBadge, { backgroundColor: theme.warning }]}>
                         <Text style={styles.newText}>NEW</Text>

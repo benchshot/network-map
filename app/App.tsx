@@ -2,12 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { API_URL, api, timeAgo, type DeviceEdit } from './src/api';
-import { useTheme } from './src/theme';
+import { API_URL, api, timeAgo, worstRisk, type DeviceEdit } from './src/api';
+import { SEVERITY, useTheme } from './src/theme';
 import { NetworkGraph } from './src/components/NetworkGraph';
 import { DeviceList, matches, type Filter } from './src/components/DeviceList';
 import { DeviceDetail } from './src/components/DeviceDetail';
-import type { Snapshot } from './src/types';
+import { SecurityPanel } from './src/components/SecurityPanel';
+import type { Finding, Snapshot } from './src/types';
+
+type Panel = 'devices' | 'security';
 
 export default function App() {
   const theme = useTheme();
@@ -17,6 +20,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string>();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
+  const [panel, setPanel] = useState<Panel>('devices');
   const [, setTick] = useState(0);
 
   const refresh = useCallback(async () => {
@@ -50,16 +54,25 @@ export default function App() {
     setSnapshot((s) => s && { ...s, devices: s.devices.map((d) => (d.id === id ? updated : d)) });
   };
 
+  const accept = async (finding: Finding, accepted: boolean) => {
+    if (!finding.deviceId) return;
+    await api.edit(finding.deviceId, accepted ? { acceptFinding: finding.key } : { unacceptFinding: finding.key });
+    refresh();
+  };
+
   const forget = async (id: string) => {
     await api.forget(id);
     setSelectedId(undefined);
     refresh();
   };
 
+  const findings = snapshot?.security.findings ?? [];
+  const risks = useMemo(() => worstRisk(snapshot?.security.findings ?? []), [snapshot]);
+
   const matchingIds = useMemo(() => {
     if (!snapshot || (!query && filter === 'all')) return undefined;
-    return new Set(snapshot.devices.filter((d) => matches(d, query, filter)).map((d) => d.id));
-  }, [snapshot, query, filter]);
+    return new Set(snapshot.devices.filter((d) => matches(d, query, filter, risks)).map((d) => d.id));
+  }, [snapshot, query, filter, risks]);
 
   const selected = snapshot?.devices.find((d) => d.id === selectedId);
   const parent = useMemo(() => {
@@ -71,6 +84,13 @@ export default function App() {
   const medium = width >= 760;
   const online = snapshot?.devices.filter((d) => d.online).length ?? 0;
   const fresh = snapshot?.devices.filter((d) => !d.acknowledged).length ?? 0;
+  const openFindings = findings.filter((f) => !f.accepted);
+  const worst = openFindings[0] ? SEVERITY[openFindings[0].severity] : undefined;
+
+  const showSecurity = () => {
+    setPanel('security');
+    setSelectedId(undefined);
+  };
 
   const list = snapshot ? (
     <DeviceList
@@ -82,7 +102,41 @@ export default function App() {
       onQuery={setQuery}
       onFilter={setFilter}
       onSelect={setSelectedId}
+      risks={risks}
     />
+  ) : null;
+
+  const sidebar = snapshot ? (
+    <View style={{ flex: 1, minHeight: 0 }}>
+      <View style={[styles.tabs, { borderColor: theme.border, backgroundColor: theme.page }]}>
+        {(['devices', 'security'] as Panel[]).map((p) => {
+          const active = panel === p;
+          return (
+            <Pressable
+              key={p}
+              onPress={() => setPanel(p)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
+              style={[styles.tab, active && { backgroundColor: theme.raised, borderColor: theme.border }]}
+            >
+              <MaterialCommunityIcons
+                name={p === 'devices' ? 'format-list-bulleted' : 'shield-outline'}
+                size={14}
+                color={active ? theme.text : theme.textSecondary}
+              />
+              <Text style={[styles.tabText, { color: active ? theme.text : theme.textSecondary }]}>
+                {p === 'devices' ? `Devices (${snapshot.devices.length})` : `Security${openFindings.length ? ` (${openFindings.length})` : ''}`}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      {panel === 'devices' ? (
+        list
+      ) : (
+        <SecurityPanel snapshot={snapshot} theme={theme} onSelect={setSelectedId} onAccept={accept} />
+      )}
+    </View>
   ) : null;
 
   const detail =
@@ -92,6 +146,8 @@ export default function App() {
         device={selected}
         parent={parent}
         theme={theme}
+        findings={findings.filter((f) => f.deviceId === selected.id)}
+        onAccept={accept}
         onEdit={(change) => edit(selected.id, change)}
         onForget={() => forget(selected.id)}
         onSelect={setSelectedId}
@@ -118,6 +174,24 @@ export default function App() {
             <Text style={[styles.routerText, { color: theme.textSecondary }]}>{r.name}</Text>
           </View>
         ))}
+        {snapshot ? (
+          <Pressable
+            onPress={showSecurity}
+            accessibilityLabel={`Security: ${openFindings.length} to review`}
+            style={[styles.securityButton, { borderColor: worst ? worst.color(theme) : theme.border }]}
+          >
+            <MaterialCommunityIcons
+              name={worst ? (worst.icon as never) : 'shield-check'}
+              size={15}
+              color={worst ? worst.color(theme) : theme.good}
+            />
+            {openFindings.length || medium ? (
+              <Text style={[styles.routerText, { color: theme.text }]}>
+                {openFindings.length ? (medium ? `${openFindings.length} to review` : openFindings.length) : 'Secure'}
+              </Text>
+            ) : null}
+          </Pressable>
+        ) : null}
         {medium && snapshot ? (
           <Text style={[styles.subtitle, { color: theme.muted }]}>
             {snapshot.scanning ? (snapshot.scanStage ?? 'Scanning…') : `Scanned ${timeAgo(snapshot.lastScanAt)}`}
@@ -177,10 +251,10 @@ export default function App() {
       ) : medium ? (
         <View style={styles.body}>
           <View style={[styles.sidebar, { borderColor: theme.border, backgroundColor: theme.surface }]}>
-            {!wide && detail ? detail : list}
+            {!wide && detail ? detail : sidebar}
           </View>
           <View style={styles.graph}>
-            <NetworkGraph snapshot={snapshot} theme={theme} selectedId={selectedId} matchingIds={matchingIds} onSelect={setSelectedId} />
+            <NetworkGraph snapshot={snapshot} theme={theme} risks={risks} selectedId={selectedId} matchingIds={matchingIds} onSelect={setSelectedId} />
           </View>
           {wide && detail ? (
             <View style={[styles.detail, { borderColor: theme.border, backgroundColor: theme.surface }]}>{detail}</View>
@@ -189,9 +263,9 @@ export default function App() {
       ) : (
         <View style={styles.stack}>
           <View style={[styles.graphNarrow, { borderColor: theme.border }]}>
-            <NetworkGraph snapshot={snapshot} theme={theme} selectedId={selectedId} matchingIds={matchingIds} onSelect={setSelectedId} />
+            <NetworkGraph snapshot={snapshot} theme={theme} risks={risks} selectedId={selectedId} matchingIds={matchingIds} onSelect={setSelectedId} />
           </View>
-          <View style={[styles.panelNarrow, { backgroundColor: theme.surface }]}>{detail ?? list}</View>
+          <View style={[styles.panelNarrow, { backgroundColor: theme.surface }]}>{detail ?? sidebar}</View>
         </View>
       )}
     </View>
@@ -213,6 +287,28 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   routerText: { fontSize: 11, fontWeight: '600' },
+  securityButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  tabs: { flexDirection: 'row', borderWidth: 1, borderRadius: 8, padding: 2, marginBottom: 12 },
+  tab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    paddingVertical: 5,
+  },
+  tabText: { fontSize: 12, fontWeight: '600' },
   scanButton: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7 },
   scanText: { color: '#fff', fontWeight: '600', fontSize: 13 },
   banner: {

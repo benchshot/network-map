@@ -21,6 +21,10 @@ export interface OpenPort {
   port: number;
   service: string;
   title?: string;
+  /** Set for ports that answered HTTP. */
+  web?: { https: boolean; login: boolean };
+  /** From a handshake on services that may allow anyone in: ADB and Redis. */
+  auth?: 'none' | 'required';
 }
 
 export interface Connection {
@@ -55,6 +59,8 @@ export interface Device {
   firstSeen: string;
   lastSeen: string;
   acknowledged: boolean;
+  /** Finding keys the user has marked as expected, e.g. "port:22". */
+  acceptedFindings?: string[];
   sources: Source[];
 }
 
@@ -75,6 +81,24 @@ export interface Snapshot {
   lastScanMs?: number;
   routers: { name: string; ok: boolean; error?: string }[];
   warnings: string[];
+  security: { findings: Finding[]; upnp?: UpnpStatus };
+}
+
+export type Severity = 'critical' | 'high' | 'medium' | 'low';
+
+export interface Finding {
+  /** Unique across the snapshot: `${deviceId}|${key}`. */
+  id: string;
+  /** Stable per device, used to remember that the user accepted it. */
+  key: string;
+  deviceId?: string;
+  category: 'internet' | 'service' | 'web';
+  severity: Severity;
+  title: string;
+  detail: string;
+  fix: string;
+  port?: number;
+  accepted: boolean;
 }
 
 /** What a router adapter knows about one client or piece of infrastructure. */
@@ -93,4 +117,24 @@ export interface RouterClient {
 export interface RouterAdapter {
   name: Source;
   fetchClients(): Promise<RouterClient[]>;
+}
+
+export interface PortMapping {
+  externalPort: number;
+  internalPort: number;
+  protocol: 'TCP' | 'UDP';
+  internalClient: string;
+  description?: string;
+  enabled: boolean;
+  /** 0 means the mapping never expires. */
+  leaseSeconds: number;
+}
+
+export interface UpnpStatus {
+  available: boolean;
+  gateway?: string;
+  externalIp?: string;
+  mappings: PortMapping[];
+  checkedAt: string;
+  error?: string;
 }
