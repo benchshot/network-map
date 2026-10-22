@@ -13,6 +13,7 @@ import {
   type GroupBy,
   type LayoutMode,
   type Point,
+  type TreeDirection,
   type TreeNode,
 } from '../graph';
 import { GROUP_LABELS, GROUP_ORDER, KINDS, SEVERITY, SEVERITY_ORDER, type Group, type Theme } from '../theme';
@@ -21,6 +22,17 @@ import type { Severity, Snapshot } from '../types';
 const NODE = 38;
 const ROOT_NODE = 50;
 const LABEL_WIDTH = 160;
+/** Labels sit under nodes in a vertical tree, so they get the sibling spacing minus a gap. */
+const VERTICAL_LABEL_WIDTH = 116;
+/** Room for a node plus a two-line label when the label sits above it. */
+const ABOVE_HEIGHT = 40;
+
+const DIRECTIONS: { value: TreeDirection; label: string; icon: string }[] = [
+  { value: 'right', label: 'Left to right', icon: 'arrow-right' },
+  { value: 'left', label: 'Right to left', icon: 'arrow-left' },
+  { value: 'down', label: 'Top to bottom', icon: 'arrow-down' },
+  { value: 'up', label: 'Bottom to top', icon: 'arrow-up' },
+];
 const TWEEN_MS = 380;
 
 const GROUP_ICONS: Record<Group, string> = {
@@ -124,8 +136,11 @@ function Segmented<T extends string>({
   value,
   onChange,
   theme,
+  iconOnly,
 }: {
   options: { value: T; label: string; icon: string }[];
+  /** Show icons only and use the label for accessibility. */
+  iconOnly?: boolean;
   value: T;
   onChange(v: T): void;
   theme: Theme;
@@ -139,11 +154,12 @@ function Segmented<T extends string>({
             key={o.value}
             onPress={() => onChange(o.value)}
             accessibilityRole="button"
+            accessibilityLabel={iconOnly ? o.label : undefined}
             accessibilityState={{ selected: active }}
-            style={[styles.segment, active && { backgroundColor: theme.accent }]}
+            style={[styles.segment, iconOnly && styles.segmentIcon, active && { backgroundColor: theme.accent }]}
           >
             <MaterialCommunityIcons name={o.icon as never} size={14} color={active ? '#fff' : theme.textSecondary} />
-            <Text style={[styles.segmentText, { color: active ? '#fff' : theme.textSecondary }]}>{o.label}</Text>
+            {!iconOnly ? <Text style={[styles.segmentText, { color: active ? '#fff' : theme.textSecondary }]}>{o.label}</Text> : null}
           </Pressable>
         );
       })}
@@ -171,6 +187,12 @@ function nodeRisk(n: TreeNode, risks: Map<string, Severity>): Severity | undefin
 export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, risks, onSelect }: Props) {
   const [mode, setMode] = usePreference<LayoutMode>('netmap.layout', 'tree');
   const [groupBy, setGroupBy] = usePreference<GroupBy>('netmap.groupBy', 'type');
+  const [storedDirection, setDirection] = usePreference<TreeDirection>('netmap.direction', 'right');
+  const direction = DIRECTIONS.some((d) => d.value === storedDirection) ? storedDirection : 'right';
+  /** Where labels go relative to their node. Radial labels sit below, like a top-to-bottom tree. */
+  const labelSide: 'right' | 'left' | 'below' | 'above' =
+    mode === 'radial' ? 'below' : direction === 'right' ? 'right' : direction === 'left' ? 'left' : direction === 'down' ? 'below' : 'above';
+  const beside = labelSide === 'right' || labelSide === 'left';
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [view, setView] = useState<Viewport>({ x: 0, y: 0, k: 1 });
@@ -190,7 +212,7 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, risks, 
   const offset = useRef<Point>({ x: 0, y: 0 });
   const target = useMemo(() => {
     if (!root) return new Map<string, Point>();
-    const raw = mode === 'tree' ? treeLayout(root) : radialLayout(root);
+    const raw = mode === 'tree' ? treeLayout(root, direction) : radialLayout(root);
     const pinned = anchor.current && raw.get(anchor.current.id);
     if (anchor.current && pinned) {
       offset.current = { x: anchor.current.at.x - pinned.x, y: anchor.current.at.y - pinned.y };
@@ -199,7 +221,7 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, risks, 
     const shifted = new Map<string, Point>();
     for (const [id, p] of raw) shifted.set(id, { x: p.x + offset.current.x, y: p.y + offset.current.y });
     return shifted;
-  }, [root, mode]);
+  }, [root, mode, direction]);
   const positions = useTweenedPositions(target, parentOf);
 
   const animateView = useCallback((to: Viewport) => {
@@ -218,30 +240,37 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, risks, 
       if (!size.width || !points.size) return;
       const xs = [...points.values()].map((p) => p.x);
       const ys = [...points.values()].map((p) => p.y);
-      const left = Math.min(...xs) - 60;
-      const right = Math.max(...xs) + (mode === 'tree' ? LABEL_WIDTH + 30 : 80);
-      const top = Math.min(...ys) - (mode === 'tree' ? 70 : 60);
-      const bottom = Math.max(...ys) + (mode === 'tree' ? 40 : 90);
+      // Padding around node centres so labels, chevrons and the toolbar fit too.
+      const pad = {
+        right: { l: 60, r: LABEL_WIDTH + 30, t: 70, b: 40 },
+        left: { l: LABEL_WIDTH + 60, r: 60, t: 70, b: 40 },
+        below: mode === 'tree' ? { l: 70, r: 70, t: 80, b: 70 } : { l: 60, r: 80, t: 60, b: 90 },
+        above: { l: 70, r: 70, t: 110, b: 50 },
+      }[labelSide];
+      const left = Math.min(...xs) - pad.l;
+      const right = Math.max(...xs) + pad.r;
+      const top = Math.min(...ys) - pad.t;
+      const bottom = Math.max(...ys) + pad.b;
       const k = Math.max(minScale, Math.min(size.width / (right - left), size.height / (bottom - top), 1.3));
       const to = { k, x: size.width / 2 - ((left + right) / 2) * k, y: size.height / 2 - ((top + bottom) / 2) * k };
       if (animate) animateView(to);
       else setView(to);
     },
-    [size, mode, animateView],
+    [size, mode, labelSide, animateView],
   );
 
   // Refit when the map changes wholesale: first load, layout or grouping switch, a big resize.
   const fittedFor = useRef('');
   const refitNext = useRef(false);
   useEffect(() => {
-    const key = `${mode}|${groupBy}|${Math.round(size.width / 50)}x${Math.round(size.height / 50)}`;
+    const key = `${mode}|${direction}|${groupBy}|${Math.round(size.width / 50)}x${Math.round(size.height / 50)}`;
     if (!size.width || !target.size || (fittedFor.current === key && !refitNext.current)) return;
     const first = !fittedFor.current;
     fittedFor.current = key;
     refitNext.current = false;
     // The tree stops shrinking at a readable size and scrolls instead; radial is an overview, so it fits whole.
     fitTo(target, !first, mode === 'tree' ? (size.width < 600 ? 0.6 : 0.8) : 0);
-  }, [mode, groupBy, size, target, fitTo]);
+  }, [mode, direction, groupBy, size, target, fitTo]);
 
   const toggle = (id: string) => {
     const at = positions.get(id);
@@ -263,6 +292,11 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, risks, 
   const switchMode = (m: LayoutMode) => {
     offset.current = { x: 0, y: 0 };
     setMode(m);
+  };
+
+  const switchDirection = (d: TreeDirection) => {
+    offset.current = { x: 0, y: 0 };
+    setDirection(d);
   };
 
   const switchGrouping = (g: GroupBy) => {
@@ -398,9 +432,13 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, risks, 
     const ay = a.y - bounds.minY;
     const bx = b.x - bounds.minX;
     const by = b.y - bounds.minY;
-    if (mode === 'tree') {
+    if (mode === 'tree' && beside) {
       const mid = (ax + bx) / 2;
       return `M${ax},${ay} C${mid},${ay} ${mid},${by} ${bx},${by}`;
+    }
+    if (mode === 'tree') {
+      const mid = (ay + by) / 2;
+      return `M${ax},${ay} C${ax},${mid} ${bx},${mid} ${bx},${by}`;
     }
     // Radial: bend each link along the rings, like d3's linkRadial.
     const c = positions.get(root.id) ?? { x: 0, y: 0 };
@@ -485,7 +523,8 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, risks, 
               : [d.ip, d.ports[0]?.service].filter(Boolean).join(' · ')
             : `${n.total} device${n.total === 1 ? '' : 's'} · ${n.online} online`;
           const canCollapse = !isRoot && n.children.length > 0;
-          const labelRight = mode === 'tree';
+          const labelWidth = mode === 'tree' && !beside ? VERTICAL_LABEL_WIDTH : LABEL_WIDTH;
+          const rowWidth = nodeSize + 8 + LABEL_WIDTH + 28;
           const press = () => (d ? onSelect(selected ? undefined : d.id) : toggle(n.id));
           const hoverProps = {
             onHoverIn: () => setHoverId(n.id),
@@ -497,9 +536,20 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, risks, 
               key={n.id}
               style={[
                 styles.node,
-                labelRight
-                  ? { left: p.x - nodeSize / 2, top: p.y - nodeSize / 2, flexDirection: 'row', alignItems: 'center' }
-                  : { left: p.x - LABEL_WIDTH / 2, top: p.y - nodeSize / 2, width: LABEL_WIDTH, alignItems: 'center' },
+                {
+                  right: { left: p.x - nodeSize / 2, top: p.y - nodeSize / 2, flexDirection: 'row', alignItems: 'center' } as const,
+                  // Fixed width, laid out from the right, so the node lands on p.x whatever the label length.
+                  left: { left: p.x + nodeSize / 2 - rowWidth, top: p.y - nodeSize / 2, width: rowWidth, flexDirection: 'row-reverse', alignItems: 'center' } as const,
+                  below: { left: p.x - labelWidth / 2, top: p.y - nodeSize / 2, width: labelWidth, alignItems: 'center' } as const,
+                  above: {
+                    left: p.x - labelWidth / 2,
+                    top: p.y + nodeSize / 2 - nodeSize - ABOVE_HEIGHT,
+                    width: labelWidth,
+                    height: nodeSize + ABOVE_HEIGHT,
+                    flexDirection: 'column-reverse',
+                    alignItems: 'center',
+                  } as const,
+                }[labelSide],
                 { opacity: dimmed ? 0.25 : d && !d.online ? 0.55 : 1 },
               ]}
               pointerEvents="box-none"
@@ -552,10 +602,15 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, risks, 
                 style={[
                   styles.labelBox,
                   { backgroundColor: theme.surface },
-                  labelRight ? { marginLeft: 8, maxWidth: LABEL_WIDTH } : { marginTop: 3, maxWidth: LABEL_WIDTH, alignItems: 'center' },
+                  {
+                    right: { marginLeft: 8, maxWidth: LABEL_WIDTH },
+                    left: { marginRight: 8, maxWidth: LABEL_WIDTH, alignItems: 'flex-end' },
+                    below: { marginTop: 3, maxWidth: labelWidth, alignItems: 'center' },
+                    above: { marginBottom: 3, maxWidth: labelWidth, alignItems: 'center' },
+                  }[labelSide] as never,
                 ]}
               >
-                <View style={styles.labelRow}>
+                <View style={[styles.labelRow, { maxWidth: labelWidth - 8 }]}>
                   <Text
                     numberOfLines={1}
                     style={[styles.label, { color: theme.text, fontWeight: selected || n.bucket || isRoot ? '700' : '500' }]}
@@ -568,21 +623,30 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, risks, 
                     </View>
                   ) : null}
                 </View>
-                {labelRight || n.bucket || isRoot ? (
+                {beside || n.bucket || isRoot ? (
                   <Text numberOfLines={1} style={[styles.sublabel, { color: theme.muted }]}>
                     {sub}
                   </Text>
                 ) : null}
               </Pressable>
 
-              {canCollapse && labelRight ? (
+              {canCollapse && beside ? (
                 <Pressable
                   onPress={() => toggle(n.id)}
                   accessibilityLabel={n.collapsed ? `Expand ${label}` : `Collapse ${label}`}
                   hitSlop={8}
-                  style={[styles.chevron, { borderColor: theme.border, backgroundColor: theme.raised }]}
+                  style={[
+                    styles.chevron,
+                    labelSide === 'left' && { marginLeft: 0, marginRight: 4 },
+                    { borderColor: theme.border, backgroundColor: theme.raised },
+                  ]}
                 >
-                  <MaterialCommunityIcons name={n.collapsed ? 'chevron-right' : 'chevron-left'} size={14} color={theme.textSecondary} />
+                  <MaterialCommunityIcons
+                    // Points the way the branch would grow when folded, back toward the node when open.
+                    name={n.collapsed === (labelSide === 'right') ? 'chevron-right' : 'chevron-left'}
+                    size={14}
+                    color={theme.textSecondary}
+                  />
                 </Pressable>
               ) : null}
             </View>
@@ -600,9 +664,9 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, risks, 
               borderColor: theme.border,
               left: Math.min(
                 size.width - 220,
-                Math.max(8, (hoverPos.x + (mode === 'tree' ? NODE / 2 + LABEL_WIDTH + 30 : 30)) * view.k + view.x),
+                Math.max(8, (hoverPos.x + (labelSide === 'right' ? NODE / 2 + LABEL_WIDTH + 30 : 30)) * view.k + view.x),
               ),
-              top: Math.min(size.height - 110, Math.max(8, hoverPos.y * view.k + view.y - (mode === 'tree' ? 20 : -26))),
+              top: Math.min(size.height - 110, Math.max(8, hoverPos.y * view.k + view.y - (beside ? 20 : -26))),
             },
           ]}
         >
@@ -646,6 +710,7 @@ export function NetworkGraph({ snapshot, theme, selectedId, matchingIds, risks, 
             { value: 'radial', label: 'Radial', icon: 'chart-donut' },
           ]}
         />
+        {mode === 'tree' ? <Segmented theme={theme} value={direction} onChange={switchDirection} options={DIRECTIONS} iconOnly /> : null}
         <Segmented
           theme={theme}
           value={groupBy}
@@ -765,6 +830,7 @@ const styles = StyleSheet.create({
   toolbar: { position: 'absolute', left: 12, top: 12, flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   segmented: { flexDirection: 'row', borderWidth: 1, borderRadius: 8, padding: 2, gap: 2 },
   segment: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 6 },
+  segmentIcon: { paddingHorizontal: 7 },
   segmentText: { fontSize: 12, fontWeight: '600' },
   legend: { position: 'absolute', left: 12, bottom: 12, padding: 10, borderRadius: 8, borderWidth: 1, gap: 4 },
   legendRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },

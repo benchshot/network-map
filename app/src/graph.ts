@@ -5,6 +5,8 @@ import type { Device, Link, Snapshot } from './types';
 
 export type LayoutMode = 'tree' | 'radial';
 export type GroupBy = 'type' | 'owner' | 'none';
+/** Which way the tree grows from the router. */
+export type TreeDirection = 'right' | 'left' | 'down' | 'up';
 
 export interface TreeNode {
   id: string;
@@ -138,18 +140,28 @@ export function flatten(root: TreeNode, includeCollapsed = false): TreeNode[] {
 
 export const TREE_ROW = 44;
 export const TREE_COLUMN = 250;
+/** Vertical trees put labels under nodes, so siblings need label-width spacing and levels need label-height spacing. */
+export const VERTICAL_COLUMN = 124;
+export const VERTICAL_ROW = 120;
 
 function visibleHierarchy(root: TreeNode) {
   return hierarchy(root, (n) => (n.collapsed ? [] : n.children));
 }
 
-/** Left-to-right tidy tree: depth runs along x, siblings stack down y. */
-export function treeLayout(root: TreeNode): Map<string, Point> {
+/** Tidy tree growing away from the router in `direction`: depth runs along that axis, siblings spread across it. */
+export function treeLayout(root: TreeNode, direction: TreeDirection = 'right'): Map<string, Point> {
+  const vertical = direction === 'down' || direction === 'up';
   const laidOut = tree<TreeNode>()
-    .nodeSize([TREE_ROW, TREE_COLUMN])
-    .separation((a, b) => (a.parent === b.parent ? 1 : 1.5))(visibleHierarchy(root));
+    .nodeSize(vertical ? [VERTICAL_COLUMN, VERTICAL_ROW] : [TREE_ROW, TREE_COLUMN])
+    .separation((a, b) => (a.parent === b.parent ? 1 : vertical ? 1.25 : 1.5))(visibleHierarchy(root));
+  const place: Record<TreeDirection, (n: HierarchyPointNode<TreeNode>) => Point> = {
+    right: (n) => ({ x: n.y, y: n.x }),
+    left: (n) => ({ x: -n.y, y: n.x }),
+    down: (n) => ({ x: n.x, y: n.y }),
+    up: (n) => ({ x: n.x, y: -n.y }),
+  };
   const positions = new Map<string, Point>();
-  laidOut.each((n: HierarchyPointNode<TreeNode>) => positions.set(n.data.id, { x: n.y, y: n.x }));
+  laidOut.each((n) => positions.set(n.data.id, place[direction](n)));
   return positions;
 }
 
